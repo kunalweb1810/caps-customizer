@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import sharp from 'sharp';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
-// Initialize Gemini API
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+// Initialize Google Gen AI
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY || '',
+});
 
 // Constants
 const CORS_HEADERS = {
@@ -53,9 +55,6 @@ function bufferToDataUrl(buffer, mimeType = 'image/png') {
  * By using Sharp first, we ensure a pixel-perfect baseline where the sticker is exactly 
  * where the user placed it on the 2D canvas. The AI is then only used for "finishing touches" 
  * (lighting, shadows, realism) rather than structural composition.
- * 
- * SHARP COMPOSITING:
- * Sharp loads the downloaded cap image and overlays the Fabric.js canvas buffer directly on top.
  */
 async function compositeImages(capImageUrl, canvasBase64) {
   // Download product image
@@ -76,14 +75,13 @@ async function compositeImages(capImageUrl, canvasBase64) {
 }
 
 /**
- * Optionally enhances the composited image using Gemini for realism.
+ * Optionally enhances the composited image using Imagen 4.0 for realism.
  * 
  * GEMINI ENHANCEMENT FALLBACK:
- * This function attempts to invoke the Gemini model to enhance shadows, lighting, and depth.
- * If the API call times out, encounters a network error, or if the model does not return 
+ * This function attempts to invoke the Google Gen AI (Imagen) model to enhance shadows, lighting, and depth.
+ * If the API times out, encounters a network error, or if the model does not return 
  * a valid image, the function safely catches the error and falls back to the original 
- * deterministic Sharp composite. This guarantees the request never fails just because 
- * the AI enhancement was temporarily unavailable.
+ * deterministic Sharp composite.
  */
 async function enhanceWithGemini(compositedBuffer, promptText) {
   if (!process.env.GEMINI_API_KEY) {
@@ -92,35 +90,54 @@ async function enhanceWithGemini(compositedBuffer, promptText) {
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-    const imagePart = {
-      inlineData: {
-        data: compositedBuffer.toString("base64"),
-        mimeType: "image/png"
-      }
-    };
+    const base64Image = compositedBuffer.toString('base64');
     
-    // We construct a strict prompt to request ONLY the enhanced base64 output
-    const geminiPrompt = `${promptText || "Overlay the design onto the cap realistically. Match lighting, shadows, and perspective."}\n\nStrict instruction: Preserve sticker positioning exactly. Do NOT hallucinate new stickers. Do NOT alter placement. Return ONLY the raw base64 encoded string of the enhanced image in PNG format, no markdown, no explanation.`;
-    
-    // Use Promise.race to enforce a timeout (e.g., 10 seconds)
-    const result = await Promise.race([
-      model.generateContent([geminiPrompt, imagePart]),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Gemini API timeout')), 10000))
+    const defaultPrompt = `
+      Make this cap mockup photorealistic.
+      Improve lighting, shadows, fabric texture,
+      and depth.
+
+      Preserve sticker positions exactly.
+      Do not add or remove stickers.
+    `;
+
+    // Ensure we explicitly add the strict constraint to any custom prompt
+    const finalPrompt = promptText 
+      ? `${promptText}\n\nPreserve sticker positions exactly. Do not add or remove stickers.` 
+      : defaultPrompt.trim();
+
+    // Set up the API call
+    const responsePromise = ai.models.generateImages({
+      model: "imagen-4.0-generate-001",
+      prompt: finalPrompt,
+      image: {
+        imageBytes: base64Image,
+        mimeType: "image/png",
+      },
+      config: {
+        numberOfImages: 1,
+      },
+    });
+
+    // Enforce a timeout (15 seconds, image generation can take slightly longer)
+    const response = await Promise.race([
+      responsePromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Imagen API timeout')), 15000))
     ]);
 
-    const response = await result.response;
-    const textResponse = response.text().trim();
+    const generatedImage = response.generatedImages?.[0];
     
-    // Validate if the response looks like a base64 string
-    if (/^[A-Za-z0-9+/=]+$/.test(textResponse) && textResponse.length > 1000) {
-      return Buffer.from(textResponse, 'base64');
+    // Extract base64 based on typical @google/genai response structures
+    const outputBase64 = generatedImage?.image?.imageBytes || generatedImage?.imageBytes;
+
+    if (outputBase64) {
+      return Buffer.from(outputBase64, 'base64');
     } else {
-      console.warn('Gemini did not return a valid base64 image. Falling back to Sharp composite.');
+      console.warn('Imagen did not return a valid base64 image. Falling back to Sharp composite.');
       return compositedBuffer;
     }
   } catch (error) {
-    console.warn('Gemini enhancement failed, falling back to Sharp composite:', error.message);
+    console.warn('Imagen enhancement failed, falling back to Sharp composite:', error.message);
     return compositedBuffer;
   }
 }
@@ -164,7 +181,7 @@ export async function POST(req) {
     // 5. Composite sticker layer onto cap image using Sharp
     const compositedBuffer = await compositeImages(normalizedProductUrl, canvas_image);
 
-    // 6. Optionally enhance realism using Gemini image model
+    // 6. Optionally enhance realism using Imagen 4.0 via @google/genai
     const finalBuffer = await enhanceWithGemini(compositedBuffer, prompt);
 
     // 7. Format the response data URL
