@@ -2,11 +2,6 @@ import { NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { GoogleGenAI } from '@google/genai';
 
-// Initialize Google Gen AI
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || '',
-});
-
 // Constants
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': 'https://kacaps.myshopify.com',
@@ -65,9 +60,19 @@ async function compositeImages(capImageUrl, canvasBase64) {
   const capBuffer = await response.arrayBuffer();
   const stickerBuffer = base64ToBuffer(canvasBase64);
 
+  const capSharp = sharp(Buffer.from(capBuffer));
+  const capMetadata = await capSharp.metadata();
+
+  // Resize sticker to match cap dimensions to prevent composite size mismatch errors
+  const resizedStickerBuffer = await sharp(stickerBuffer)
+    .resize(capMetadata.width, capMetadata.height, {
+      fit: 'fill'
+    })
+    .toBuffer();
+
   // Composite the sticker layer onto the cap image
-  const compositedBuffer = await sharp(Buffer.from(capBuffer))
-    .composite([{ input: stickerBuffer }])
+  const compositedBuffer = await capSharp
+    .composite([{ input: resizedStickerBuffer }])
     .png()
     .toBuffer();
 
@@ -90,6 +95,10 @@ async function enhanceWithGemini(compositedBuffer, promptText) {
   }
 
   try {
+    const ai = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+    });
+
     const base64Image = compositedBuffer.toString('base64');
     
     const defaultPrompt = `
@@ -194,9 +203,9 @@ export async function POST(req) {
 
   } catch (error) {
     // Safe error logging, no secret exposure
-    console.error('Error processing gemini-merge request:', error.message);
+    console.error('Error processing gemini-merge request:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to process image merge' },
+      { success: false, error: 'Failed to process image merge', details: error.message },
       { status: 500, headers: CORS_HEADERS }
     );
   }
