@@ -51,52 +51,58 @@ function bufferToDataUrl(buffer, mimeType = 'image/png') {
  * where the user placed it on the 2D canvas. The AI is then only used for "finishing touches" 
  * (lighting, shadows, realism) rather than structural composition.
  */
-async function compositeImages(capImageUrl, canvasBase64) {
-  const controller = new AbortController();
+async function compositeImages(productImageUrl, stickers) {
 
-const timer = setTimeout(() => controller.abort(), 15000);
+    const response = await fetch(productImageUrl);
 
-const response = await fetch(capImageUrl, {
-    signal: controller.signal,
-});
+    if (!response.ok) {
+        throw new Error("Unable to download cap image");
+    }
 
-clearTimeout(timer);
+    const capBuffer = Buffer.from(await response.arrayBuffer());
 
-  if (!response.ok) {
-    throw new Error(`Failed to download product image`);
-  }
+    const composites = [];
 
-  const capBuffer = Buffer.from(await response.arrayBuffer());
-  const canvasBuffer = base64ToBuffer(canvasBase64);
+    for (const sticker of stickers) {
 
-  const cap = sharp(capBuffer);
-  const meta = await cap.metadata();
+        const stickerResponse = await fetch(sticker.image);
 
-  // Resize without stretching
-  const overlay = await sharp(canvasBuffer)
-    .resize({
-      width: meta.width,
-      height: meta.height,
-      fit: "contain",
-      background: {
-        r: 0,
-        g: 0,
-        b: 0,
-        alpha: 0,
-      },
-    })
-    .png()
-    .toBuffer();
+        if (!stickerResponse.ok) continue;
 
-  return await cap
-    .composite([
-      {
-        input: overlay,
-        blend: "over",
-      },
-    ])
-    .png()
-    .toBuffer();
+        const stickerBuffer = Buffer.from(
+            await stickerResponse.arrayBuffer()
+        );
+
+        const transformed = await sharp(stickerBuffer)
+            .resize(sticker.width, sticker.height)
+            .rotate(sticker.rotation, {
+                background: {
+                    r:0,
+                    g:0,
+                    b:0,
+                    alpha:0
+                }
+            })
+            .png()
+            .toBuffer();
+
+        composites.push({
+
+            input: transformed,
+
+            left: sticker.x,
+
+            top: sticker.y
+
+        });
+
+    }
+
+    return await sharp(capBuffer)
+        .composite(composites)
+        .png()
+        .toBuffer();
+
 }
 
 /**
@@ -210,21 +216,36 @@ export async function POST(req) {
 
     // 2. Parse JSON body
     const body = await req.json();
-    const { canvas_image, product_image, prompt } = body;
+    const {
+    product_image,
+    stickers
+} = body;
 
     // 3. Validate payloads
-    if (!canvas_image || !product_image) {
-      return NextResponse.json(
-        { success: false, error: 'Missing canvas_image or product_image' },
-        { status: 400, headers: CORS_HEADERS }
-      );
-    }
+    if(
+    !product_image ||
+    !Array.isArray(stickers)
+){
+    return NextResponse.json(
+    {
+        success:false,
+        error:"Invalid payload"
+    },
+    {
+        status:400,
+        headers:CORS_HEADERS
+    });
+}
 
     // 4. Normalize product image URL
     const normalizedProductUrl = normalizeImageUrl(product_image);
 
     // 5. Composite sticker layer onto cap image using Sharp
-    const compositedBuffer = await compositeImages(normalizedProductUrl, canvas_image);
+    const compositedBuffer =
+await compositeImages(
+    normalizedProductUrl,
+    stickers
+);
 
     // 6. Optionally enhance realism using Imagen 4.0 via @google/genai
     const finalBuffer = await enhanceWithGemini(compositedBuffer, prompt);
