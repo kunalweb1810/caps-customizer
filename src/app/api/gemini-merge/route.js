@@ -127,30 +127,32 @@ async function enhanceWithGemini(compositedBuffer) {
 
     const base64Image = compositedBuffer.toString('base64');
     
-   const defaultPrompt = `
-You are editing an existing product mockup.
+   const defaultPrompt = `You are editing an existing product photograph.
 
-DO NOT redraw the cap.
+The uploaded image already contains the correct sticker positions.
 
-DO NOT change the cap shape.
+Do NOT move, resize, rotate, replace, remove or duplicate any sticker.
 
-DO NOT move, resize or rotate any sticker.
+Treat every sticker as if it has already been printed onto the cap.
 
-DO NOT create new stickers.
+Improve only:
 
-DO NOT remove stickers.
+• lighting
+• fabric texture
+• soft shadow beneath each sticker
+• realistic print blending
+• natural perspective
+• stitching visibility
 
-Only improve:
+Do not change the cap angle.
 
-- realistic embroidery look
-- lighting
-- soft fabric shadows
-- realistic fabric wrinkles
-- stitching depth
-- natural texture
+Do not change the background.
 
-Keep everything else pixel identical.
-`;
+Do not crop.
+
+Do not generate a new cap.
+
+Only make the printed stickers look professionally applied.`;
 
     // Ensure we explicitly add the strict constraint to any custom prompt
     const finalPrompt = promptText 
