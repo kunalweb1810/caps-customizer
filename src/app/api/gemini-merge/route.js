@@ -52,31 +52,51 @@ function bufferToDataUrl(buffer, mimeType = 'image/png') {
  * (lighting, shadows, realism) rather than structural composition.
  */
 async function compositeImages(capImageUrl, canvasBase64) {
-  // Download product image
-  const response = await fetch(capImageUrl);
+  const controller = new AbortController();
+
+const timer = setTimeout(() => controller.abort(), 15000);
+
+const response = await fetch(capImageUrl, {
+    signal: controller.signal,
+});
+
+clearTimeout(timer);
+
   if (!response.ok) {
-    throw new Error(`Failed to download product image: ${response.statusText}`);
+    throw new Error(`Failed to download product image`);
   }
-  const capBuffer = await response.arrayBuffer();
-  const stickerBuffer = base64ToBuffer(canvasBase64);
 
-  const capSharp = sharp(Buffer.from(capBuffer));
-  const capMetadata = await capSharp.metadata();
+  const capBuffer = Buffer.from(await response.arrayBuffer());
+  const canvasBuffer = base64ToBuffer(canvasBase64);
 
-  // Resize sticker to match cap dimensions to prevent composite size mismatch errors
-  const resizedStickerBuffer = await sharp(stickerBuffer)
-    .resize(capMetadata.width, capMetadata.height, {
-      fit: 'fill'
+  const cap = sharp(capBuffer);
+  const meta = await cap.metadata();
+
+  // Resize without stretching
+  const overlay = await sharp(canvasBuffer)
+    .resize({
+      width: meta.width,
+      height: meta.height,
+      fit: "contain",
+      background: {
+        r: 0,
+        g: 0,
+        b: 0,
+        alpha: 0,
+      },
     })
-    .toBuffer();
-
-  // Composite the sticker layer onto the cap image
-  const compositedBuffer = await capSharp
-    .composite([{ input: resizedStickerBuffer }])
     .png()
     .toBuffer();
 
-  return compositedBuffer;
+  return await cap
+    .composite([
+      {
+        input: overlay,
+        blend: "over",
+      },
+    ])
+    .png()
+    .toBuffer();
 }
 
 /**
@@ -101,14 +121,30 @@ async function enhanceWithGemini(compositedBuffer, promptText) {
 
     const base64Image = compositedBuffer.toString('base64');
     
-    const defaultPrompt = `
-      Make this cap mockup photorealistic.
-      Improve lighting, shadows, fabric texture,
-      and depth.
+   const defaultPrompt = `
+You are editing an existing product mockup.
 
-      Preserve sticker positions exactly.
-      Do not add or remove stickers.
-    `;
+DO NOT redraw the cap.
+
+DO NOT change the cap shape.
+
+DO NOT move, resize or rotate any sticker.
+
+DO NOT create new stickers.
+
+DO NOT remove stickers.
+
+Only improve:
+
+- realistic embroidery look
+- lighting
+- soft fabric shadows
+- realistic fabric wrinkles
+- stitching depth
+- natural texture
+
+Keep everything else pixel identical.
+`;
 
     // Ensure we explicitly add the strict constraint to any custom prompt
     const finalPrompt = promptText 
@@ -131,7 +167,7 @@ async function enhanceWithGemini(compositedBuffer, promptText) {
     // Enforce a timeout (15 seconds, image generation can take slightly longer)
     const response = await Promise.race([
       responsePromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Imagen API timeout')), 15000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Imagen API timeout')), 45000))
     ]);
 
     const generatedImage = response.generatedImages?.[0];
