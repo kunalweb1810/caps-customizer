@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { GoogleGenAI } from '@google/genai';
-
+import { GoogleGenerativeAI } from "@google/generative-ai";
 // Constants
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': 'https://kacaps.myshopify.com',
@@ -114,78 +114,45 @@ async function compositeImages(productImageUrl, stickers) {
  * a valid image, the function safely catches the error and falls back to the original 
  * deterministic Sharp composite.
  */
+
+
 async function enhanceWithGemini(compositedBuffer) {
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn('GEMINI_API_KEY not set. Falling back to Sharp composite.');
-    return compositedBuffer;
-  }
+  if (!process.env.GEMINI_API_KEY) return compositedBuffer;
 
   try {
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-    });
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    // Use the model that supports multimodal input (e.g., gemini-1.5-pro or flash)
+    // Note: Imagen-specific endpoints vary; ensure you are using the correct SDK method.
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
     const base64Image = compositedBuffer.toString('base64');
-    
-   const defaultPrompt = `Generate a photorealistic baseball cap.
 
-The first image is a front-facing design guide.
+    const prompt = `You are a professional product photographer. 
+    Transform this image into a hyper-realistic ecommerce product photo. 
+    Maintain the exact composition, sticker placement, and front-facing orientation. 
+    Add realistic fabric texture, soft studio lighting, and subtle shadows under the visor. 
+    Do not alter the sticker design or position. Output only the final image.`;
 
-The second image contains transparent stickers.
-
-Create a realistic product photo using the exact guide orientation.
-
-The cap must remain front-facing.
-
-The sticker positions must exactly match the guide.
-
-Do not move, resize or rotate stickers.
-
-Do not change the cap orientation.
-
-Do not crop.
-
-Create realistic fabric texture, stitching, shadows and lighting.
-
-The output should look like a professional ecommerce product photograph.`;
-
-    // Ensure we explicitly add the strict constraint to any custom prompt
-    const finalPrompt = promptText 
-      ? `${promptText}\n\nPreserve sticker positions exactly. Do not add or remove stickers.` 
-      : defaultPrompt.trim();
-
-    // Set up the API call
-    const responsePromise = ai.models.generateImages({
-      model: "gemini-2.5-flash-image-preview",
-      prompt: finalPrompt,
-      image: {
-        imageBytes: base64Image,
-        mimeType: "image/png",
+    const result = await model.generateContent([
+      prompt,
+      {
+        inlineData: {
+          data: base64Image,
+          mimeType: "image/png"
+        },
       },
-      config: {
-        numberOfImages: 1,
-      },
-    });
-
-    // Enforce a timeout (15 seconds, image generation can take slightly longer)
-    const response = await Promise.race([
-      responsePromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Imagen API timeout')), 45000))
     ]);
 
-    const generatedImage = response.generatedImages?.[0];
+    // Note: If you are specifically using the Imagen 3 API for Image-to-Image,
+    // ensure your request payload matches the Vertex AI/Google Cloud specific schema.
+    const response = await result.response;
+    const text = response.text();
     
-    // Extract base64 based on typical @google/genai response structures
-    const outputBase64 = generatedImage?.image?.imageBytes || generatedImage?.imageBytes;
+    // If your API returns the image directly as base64 in the response:
+    return Buffer.from(text, 'base64'); 
 
-    if (outputBase64) {
-      return Buffer.from(outputBase64, 'base64');
-    } else {
-      console.warn('Imagen did not return a valid base64 image. Falling back to Sharp composite.');
-      return compositedBuffer;
-    }
   } catch (error) {
-    console.warn('Imagen enhancement failed, falling back to Sharp composite:', error.message);
+    console.error('Enhancement failed, falling back:', error.message);
     return compositedBuffer;
   }
 }
