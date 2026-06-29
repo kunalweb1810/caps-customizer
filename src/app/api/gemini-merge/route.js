@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import sharp from 'sharp';
-import { GoogleGenAI } from '@google/genai';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 // Constants
 const CORS_HEADERS = {
