@@ -114,7 +114,7 @@ async function compositeImages(productImageUrl, stickers) {
  * a valid image, the function safely catches the error and falls back to the original 
  * deterministic Sharp composite.
  */
-async function enhanceWithGemini(compositedBuffer, promptText) {
+async function enhanceWithGemini(compositedBuffer) {
   if (!process.env.GEMINI_API_KEY) {
     console.warn('GEMINI_API_KEY not set. Falling back to Sharp composite.');
     return compositedBuffer;
@@ -248,7 +248,7 @@ await compositeImages(
 );
 
     // 6. Optionally enhance realism using Imagen 4.0 via @google/genai
-    const finalBuffer = await enhanceWithGemini(compositedBuffer, prompt);
+    const finalBuffer = await enhanceWithGemini(compositedBuffer);
 
     // 7. Format the response data URL
     const finalDataUrl = bufferToDataUrl(finalBuffer, 'image/png');
