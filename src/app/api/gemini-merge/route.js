@@ -156,7 +156,7 @@ The output should look like a professional ecommerce product photograph.`;
 
     // Set up the API call
     const responsePromise = ai.models.generateImages({
-      model: "imagen-4.0-generate-001",
+      model: "gemini-2.5-flash-image-preview",
       prompt: finalPrompt,
       image: {
         imageBytes: base64Image,
