@@ -127,32 +127,27 @@ async function enhanceWithGemini(compositedBuffer) {
 
     const base64Image = compositedBuffer.toString('base64');
     
-   const defaultPrompt = `You are editing an existing product photograph.
+   const defaultPrompt = `Generate a photorealistic baseball cap.
 
-The uploaded image already contains the correct sticker positions.
+The first image is a front-facing design guide.
 
-Do NOT move, resize, rotate, replace, remove or duplicate any sticker.
+The second image contains transparent stickers.
 
-Treat every sticker as if it has already been printed onto the cap.
+Create a realistic product photo using the exact guide orientation.
 
-Improve only:
+The cap must remain front-facing.
 
-• lighting
-• fabric texture
-• soft shadow beneath each sticker
-• realistic print blending
-• natural perspective
-• stitching visibility
+The sticker positions must exactly match the guide.
 
-Do not change the cap angle.
+Do not move, resize or rotate stickers.
 
-Do not change the background.
+Do not change the cap orientation.
 
 Do not crop.
 
-Do not generate a new cap.
+Create realistic fabric texture, stitching, shadows and lighting.
 
-Only make the printed stickers look professionally applied.`;
+The output should look like a professional ecommerce product photograph.`;
 
     // Ensure we explicitly add the strict constraint to any custom prompt
     const finalPrompt = promptText 
