@@ -83,25 +83,16 @@ async function compositeImages(productImageUrl, guideImageUrl) {
 
   const productMetadata = await sharp(productBuffer).metadata();
 
-  const resizedGuideBuffer = await sharp(guideBuffer)
-    .resize({
-      width: productMetadata.width || undefined,
-      height: productMetadata.height || undefined,
-      fit: 'contain',
-      background: {
-        r: 0,
-        g: 0,
-        b: 0,
-        alpha: 0,
-      },
-    })
-    .png()
-    .toBuffer();
-
-  return await sharp(productBuffer)
-    .composite([{ input: resizedGuideBuffer, left: 0, top: 0 }])
-    .png()
-    .toBuffer();
+ return sharp(productBuffer)
+  .composite([
+    {
+      input: guideBuffer,
+      left: 0,
+      top: 0,
+    },
+  ])
+  .png()
+  .toBuffer();
 }
 
 /**
@@ -113,10 +104,10 @@ async function compositeImages(productImageUrl, guideImageUrl) {
  * a valid image, the function safely catches the error and falls back to the original 
  * deterministic Sharp composite.
  */
-async function enhanceWithGemini(compositedBuffer, promptText = '') {
+async function enhanceWithGemini(productBuffer, guideBuffer, promptText = '') {
   if (!process.env.GEMINI_API_KEY) {
-    console.warn('GEMINI_API_KEY not set. Falling back to Sharp composite.');
-    return compositedBuffer;
+    console.warn('GEMINI_API_KEY not set.');
+    return null;
   }
 
   try {
@@ -124,67 +115,67 @@ async function enhanceWithGemini(compositedBuffer, promptText = '') {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
-    const base64Image = compositedBuffer.toString('base64');
-    
-   const defaultPrompt = `You are given two images:
+    const prompt =
+      promptText ||
+      `You are given two images.
 
-Image 1: The original product photo of the cap.
-Image 2: A placement guide image showing the intended design placement.
+Image 1:
+The original cap product photo.
 
-Task:
-Use Image 2 as the placement guide and apply it to Image 1 to create a realistic final preview of the cap.
+Image 2:
+A transparent placement guide.
+
+Apply Image 2 onto Image 1 exactly.
 
 Requirements:
-- Keep the original cap photo as the base.
-- Preserve the cap shape, fabric, stitching, texture, color, shadows, lighting, folds, branding, and perspective.
-- Preserve the exact camera angle, framing, crop, and resolution.
-- Use the guide image only as the placement reference and do not redesign or reinterpret it.
-- Keep every visible element from the guide image in the correct position relative to the cap.
-- Do not add or remove design elements.
-- Do not change the background.
-- Return only the final composited product image.
+- Keep the original cap photo.
+- Preserve lighting.
+- Preserve stitching.
+- Preserve shadows.
+- Preserve perspective.
+- Preserve texture.
+- Do not modify background.
+- Do not invent new graphics.
+- Use Image 2 only as placement reference.
 
-Goal:
-Produce a photorealistic preview of the original cap with the guide design applied exactly where specified.`;
+Return only the final edited image.`;
 
-    // Ensure we explicitly add the strict constraint to any custom prompt
-    const finalPrompt = promptText 
-      ? `${promptText}\n\nPreserve sticker positions exactly. Do not add or remove stickers.` 
-      : defaultPrompt.trim();
-
-    // Set up the API call
-    const responsePromise = ai.models.generateImages({
-      model: "imagen-4.0-generate-001",
-      prompt: finalPrompt,
-      image: {
-        imageBytes: base64Image,
-        mimeType: "image/png",
-      },
-      config: {
-        numberOfImages: 1,
-      },
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-image-preview",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: prompt,
+            },
+            {
+              inlineData: {
+                mimeType: "image/webp",
+                data: productBuffer.toString("base64"),
+              },
+            },
+            {
+              inlineData: {
+                mimeType: "image/png",
+                data: guideBuffer.toString("base64"),
+              },
+            },
+          ],
+        },
+      ],
     });
 
-    // Enforce a timeout (15 seconds, image generation can take slightly longer)
-    const response = await Promise.race([
-      responsePromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Imagen API timeout')), 45000))
-    ]);
-
-    const generatedImage = response.generatedImages?.[0];
-    
-    // Extract base64 based on typical @google/genai response structures
-    const outputBase64 = generatedImage?.image?.imageBytes || generatedImage?.imageBytes;
-
-    if (outputBase64) {
-      return Buffer.from(outputBase64, 'base64');
-    } else {
-      console.warn('Imagen did not return a valid base64 image. Falling back to Sharp composite.');
-      return compositedBuffer;
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData?.data) {
+        return Buffer.from(part.inlineData.data, "base64");
+      }
     }
-  } catch (error) {
-    console.warn('Imagen enhancement failed, falling back to Sharp composite:', error.message);
-    return compositedBuffer;
+
+    return null;
+  } catch (err) {
+    console.error(err);
+    return null;
   }
 }
 
@@ -252,11 +243,27 @@ export async function POST(req) {
     const normalizedProductUrl = normalizeImageUrl(productImageInput);
     const normalizedGuideUrl = normalizeImageUrl(guideImageInput);
 
-    // 5. Composite the guide image onto the product image using Sharp
-    const compositedBuffer = await compositeImages(normalizedProductUrl, normalizedGuideUrl);
+  const productBuffer = await loadImageBuffer(
+  normalizedProductUrl,
+  "product image"
+);
 
-    // 6. Optionally enhance realism using Imagen 4.0 via @google/genai
-    const finalBuffer = await enhanceWithGemini(compositedBuffer);
+const guideBuffer = await loadImageBuffer(
+  normalizedGuideUrl,
+  "guide image"
+);
+
+const aiResult = await enhanceWithGemini(
+  productBuffer,
+  guideBuffer
+);
+
+const finalBuffer =
+  aiResult ||
+  (await compositeImages(
+    normalizedProductUrl,
+    normalizedGuideUrl
+  ));
 
     // 7. Format the response data URL
     const finalDataUrl = bufferToDataUrl(finalBuffer, 'image/png');
