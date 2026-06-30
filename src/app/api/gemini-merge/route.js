@@ -106,40 +106,47 @@ async function enhanceWithGemini(productBuffer, canvasBuffer, promptText) {
     return null;
   }
 
-  try {
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-    });
+  const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: [
-        {
-          inlineData: {
-            mimeType: 'image/png',
-            data: productBuffer.toString('base64'),
-          },
-        },
-        {
-          inlineData: {
-            mimeType: 'image/png',
-            data: canvasBuffer.toString('base64'),
-          },
-        },
-        promptText,
-      ],
-    });
+  const modelsToTry = ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview'];
 
-    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-    if (part?.inlineData?.data) {
-      return Buffer.from(part.inlineData.data, 'base64');
+  for (const model of modelsToTry) {
+    try {
+      console.log(`Attempting image generation with model: ${model}`);
+      const response = await ai.models.generateContent({
+        model: model,
+        contents: [
+          {
+            inlineData: {
+              mimeType: 'image/png',
+              data: productBuffer.toString('base64'),
+            },
+          },
+          {
+            inlineData: {
+              mimeType: 'image/png',
+              data: canvasBuffer.toString('base64'),
+            },
+          },
+          promptText,
+        ],
+      });
+
+      const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+      if (part?.inlineData?.data) {
+        console.log(`Successfully generated image using ${model}`);
+        return Buffer.from(part.inlineData.data, 'base64');
+      }
+      console.warn(`Model ${model} completed but did not return inline image data.`);
+    } catch (err) {
+      console.error(`Error calling Gemini API with model ${model}:`, err.message || err);
     }
-    console.warn('Gemini response did not contain inline image data.');
-    return null;
-  } catch (err) {
-    console.error('Error calling Gemini API:', err);
-    return null;
   }
+
+  console.warn('All Gemini image-to-image models failed. Falling back to Sharp compositing.');
+  return null;
 }
 
 export async function OPTIONS(req) {
@@ -171,19 +178,19 @@ export async function POST(req) {
     const canvasBuffer = await loadImageBuffer(canvas_image, 'canvas_image');
 
     // Optimized blending prompt for realistic 3D projecting and shadow mapping
-    const optimizedPrompt = prompt || `This is a product photo of a cap with crochet stickers on it. 
-Analyze the two input images:
-- The first image is the cap product photo (which can be tilted, rotated, or angled).
-- The second image is a transparent canvas guide containing crochet stickers.
+    const optimizedPrompt = prompt || `You are given two images:
+1. A real product photo of a blank white cap (the target).
+2. A schematic/template drawing of a cap with custom stickers placed on it (the layout guide).
 
-Your goal is to realistically project the crochet stickers from the second image onto the cap in the first image, placing them in the exact relative positions as shown on the canvas.
+Your goal: Isolate the stickers from the layout guide (Image 2) and place them onto the real product cap (Image 1) in the corresponding positions.
 
 CRITICAL REQUIREMENTS:
-- Align the stickers to the 3D surface, contours, folds, and perspective of the cap. If the cap is angled or tilted, warp and rotate the stickers to match the cap's surface perfectly.
-- Subtly enhance the local lighting, highlights, textures, and drop shadows of the stickers so they look physically attached (crocheted) onto the fabric of the cap.
-- Do NOT alter the background, shape, color, or design of the original cap.
-- Do NOT change the identity, design, or relative arrangement of the stickers.
-- Make the final output look like a single, photorealistic product photo of the customized cap.`;
+- Identify and isolate ONLY the stickers from Image 2. Completely ignore and discard the black schematic outline/lines of the cap template and any transparent/white space in Image 2.
+- Place the stickers onto the real cap in Image 1 at the same relative position (e.g., center of the front panel).
+- Adapt the stickers to the 3D surface, contours, orientation, and perspective of the real cap. Since the real cap is angled/rotated to the side, warp, rotate, and skew the stickers so they look perfectly flat on the fabric of the real cap.
+- Subtly blend the stickers into the fabric texture, adjusting local lighting, highlights, and adding realistic drop shadows to match the lighting direction in the real product photo.
+- Keep the real cap's background, shape, texture, color, and design completely unchanged.
+- The final output must be a single, photorealistic, high-quality product photo of the customized real cap.`;
 
     const aiResult = await enhanceWithGemini(productBuffer, canvasBuffer, optimizedPrompt);
 
