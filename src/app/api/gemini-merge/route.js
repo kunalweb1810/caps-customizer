@@ -81,18 +81,24 @@ async function compositeImages(productImageUrl, guideImageUrl) {
     return productBuffer;
   }
 
-  const productMetadata = await sharp(productBuffer).metadata();
+  const productMeta = await sharp(productBuffer).metadata();
 
- return sharp(productBuffer)
-  .composite([
-    {
-      input: guideBuffer,
-      left: 0,
-      top: 0,
-    },
-  ])
+const resizedGuideBuffer = await sharp(guideBuffer)
+  .resize(
+      productMeta.width,
+      productMeta.height
+  )
   .png()
   .toBuffer();
+
+return sharp(productBuffer)
+    .composite([
+        {
+            input: resizedGuideBuffer
+        }
+    ])
+    .png()
+    .toBuffer();
 }
 
 /**
