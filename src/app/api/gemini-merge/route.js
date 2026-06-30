@@ -126,11 +126,30 @@ async function enhanceWithGemini(compositedBuffer) {
 
     const base64Image = compositedBuffer.toString('base64');
 
-    const prompt = `You are a professional product photographer. 
-    Transform this image into a hyper-realistic ecommerce product photo. 
-    Maintain the exact composition, sticker placement, and front-facing orientation. 
-    Add realistic fabric texture, soft studio lighting, and subtle shadows under the visor. 
-    Do not alter the sticker design or position. Output only the final image.`;
+    const prompt = `You are given two images:
+
+Image 1: The original product photo of the cap.
+Image 2: A placement guide showing one or more crochet stickers positioned on the cap.
+
+Task:
+Transfer every crochet sticker from Image 2 onto the exact matching location on Image 1.
+
+Requirements:
+- Keep the original cap photo completely unchanged.
+- Do not alter the cap shape, fabric, stitching, texture, color, shadows, lighting, folds, branding, or perspective.
+- Preserve the exact camera angle, framing, crop, and resolution.
+- Do not generate a new cap. Use the original cap image as the base.
+- Copy each crochet sticker exactly as provided. Do not redesign, redraw, recolor, smooth, sharpen, upscale, or reinterpret it.
+- Preserve every crochet detail, including yarn texture, embroidery, edges, colors, thickness, and imperfections.
+- Maintain the exact size, rotation, and position shown in the placement guide.
+- Make the sticker appear naturally attached to the cap by matching only the local perspective, lighting, and surface curvature.
+- Do not add extra shadows, reflections, or effects unless required for realistic attachment.
+- Do not add, remove, or modify any stickers.
+- Do not change the background.
+- Return only the final composited product image.
+
+Goal:
+Produce a photorealistic preview of the original cap with the selected crochet stickers applied exactly where specified.`;
 
     const result = await model.generateContent([
       prompt,
