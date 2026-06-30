@@ -2,118 +2,204 @@ import { NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { GoogleGenAI } from '@google/genai';
 
-// --- Configuration ---
+// Constants and CORS config
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': 'https://kacaps.myshopify.com',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024; // 10MB limit
+/**
+ * Dynamically construct CORS headers to support local development alongside production.
+ */
+function getCorsHeaders(req) {
+  const origin = req.headers.get('origin');
+  if (origin && (origin === 'https://kacaps.myshopify.com' || origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+    return {
+      ...CORS_HEADERS,
+      'Access-Control-Allow-Origin': origin,
+    };
+  }
+  return CORS_HEADERS;
+}
 
-// --- Helper Functions ---
-const normalizeImageUrl = (url) => url?.startsWith('//') ? `https:${url}` : url;
-const stripBase64 = (data) => data.replace(/^data:image\/\w+;base64,/, '');
-const bufferToDataUrl = (buffer, mimeType = 'image/png') => `data:${mimeType};base64,${buffer.toString('base64')}`;
+const MAX_PAYLOAD_SIZE = 15 * 1024 * 1024; // 15MB limit
 
-// --- Core Image Processing ---
-async function compositeImages(capImageUrl, canvasBase64) {
-  // 1. Fetch product image from URL
-  const response = await fetch(capImageUrl);
-  if (!response.ok) throw new Error(`Failed to download product image: ${response.statusText}`);
-  
-  const capBuffer = await response.arrayBuffer();
-  
-  // 2. Parse canvas guide from Base64
-  const stickerBuffer = Buffer.from(stripBase64(canvasBase64), 'base64');
+/**
+ * Normalizes protocol-relative image URLs.
+ */
+function normalizeImageUrl(url) {
+  if (!url) return null;
+  if (url.startsWith('//')) {
+    return `https:${url}`;
+  }
+  return url;
+}
 
-  const capSharp = sharp(Buffer.from(capBuffer));
-  const capMetadata = await capSharp.metadata();
+/**
+ * Safely decodes base64 string to Buffer.
+ */
+function base64ToBuffer(base64String) {
+  const matches = base64String.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+  if (matches && matches.length === 3) {
+    return Buffer.from(matches[2], 'base64');
+  }
+  return Buffer.from(base64String, 'base64');
+}
 
-  // 3. Resize canvas guide to exactly match the product image dimensions
-  const resizedStickerBuffer = await sharp(stickerBuffer)
-    .resize(capMetadata.width, capMetadata.height, { fit: 'fill' })
+/**
+ * Converts image Buffer back to data URL for frontend consumption.
+ */
+function bufferToDataUrl(buffer, mimeType = 'image/png') {
+  return `data:${mimeType};base64,${buffer.toString('base64')}`;
+}
+
+/**
+ * Loads an image from URL or base64 data string into a Buffer.
+ */
+async function loadImageBuffer(imageInput, label = 'image') {
+  if (!imageInput) return null;
+  if (typeof imageInput === 'string' && (imageInput.startsWith('data:') || !imageInput.startsWith('http'))) {
+    try {
+      return base64ToBuffer(imageInput);
+    } catch (e) {
+      if (imageInput.startsWith('http')) {
+        // Fall through to fetch if it looks like a URL
+      } else {
+        throw new Error(`Invalid base64 format for ${label}`);
+      }
+    }
+  }
+
+  const response = await fetch(normalizeImageUrl(imageInput));
+  if (!response.ok) {
+    throw new Error(`Unable to download ${label} from URL: ${imageInput}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+/**
+ * Deterministic fallback that overlays the transparent sticker canvas on top of the product image using Sharp.
+ */
+async function compositeImages(productBuffer, canvasBuffer) {
+  const productMeta = await sharp(productBuffer).metadata();
+  const resizedCanvasBuffer = await sharp(canvasBuffer)
+    .resize(productMeta.width, productMeta.height, {
+      fit: 'contain',
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    })
+    .png()
     .toBuffer();
 
-  // 4. Composite together for pixel-perfect placement
-  return await capSharp
-    .composite([{ input: resizedStickerBuffer }])
+  return sharp(productBuffer)
+    .composite([{ input: resizedCanvasBuffer }])
     .png()
     .toBuffer();
 }
 
-async function enhanceWithGemini(compositedBuffer, promptText) {
+/**
+ * Utilizes the Gemini 2.5 Flash Image model to realistically blend the canvas stickers onto the product cap.
+ */
+async function enhanceWithGemini(productBuffer, canvasBuffer, promptText) {
   if (!process.env.GEMINI_API_KEY) {
-    console.warn('GEMINI_API_KEY missing. Returning standard composite.');
-    return compositedBuffer;
+    console.warn('GEMINI_API_KEY environment variable is not set. Falling back to Sharp compositing.');
+    return null;
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    
-    // Fallback prompt if none provided
-    const finalPrompt = promptText || "Seamlessly blend the applied stickers into the product image, matching lighting, shadows, and texture perfectly while keeping exact placement.";
-
-    // Note: Use the appropriate image generation model available to your API tier
-    const response = await ai.models.generateImages({
-        model: 'imagen-3.0-generate-001',
-        prompt: finalPrompt,
-        image: {
-            imageBytes: compositedBuffer.toString('base64'),
-        },
-        numberOfImages: 1,
-        outputMimeType: 'image/png',
+    const ai = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
     });
 
-    const outputBase64 = response.generatedImages?.[0]?.image?.imageBytes;
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: [
+        {
+          inlineData: {
+            mimeType: 'image/png',
+            data: productBuffer.toString('base64'),
+          },
+        },
+        {
+          inlineData: {
+            mimeType: 'image/png',
+            data: canvasBuffer.toString('base64'),
+          },
+        },
+        promptText,
+      ],
+    });
 
-    if (!outputBase64) throw new Error("AI returned no image data.");
-    
-    return Buffer.from(outputBase64, 'base64');
-  } catch (error) {
-    console.error('AI enhancement failed, falling back to basic composite:', error.message);
-    return compositedBuffer; // Always fallback to the safe composite if AI fails
+    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    if (part?.inlineData?.data) {
+      return Buffer.from(part.inlineData.data, 'base64');
+    }
+    console.warn('Gemini response did not contain inline image data.');
+    return null;
+  } catch (err) {
+    console.error('Error calling Gemini API:', err);
+    return null;
   }
 }
 
-// --- API Route Handlers ---
-export async function OPTIONS() {
-  return new NextResponse(null, { headers: CORS_HEADERS, status: 200 });
+export async function OPTIONS(req) {
+  return new NextResponse(null, { headers: getCorsHeaders(req), status: 200 });
 }
 
 export async function POST(req) {
+  const headers = getCorsHeaders(req);
   try {
-    // 1. Validate payload size
     const contentLength = req.headers.get('content-length');
     if (contentLength && parseInt(contentLength, 10) > MAX_PAYLOAD_SIZE) {
-      return NextResponse.json({ success: false, error: 'Payload too large' }, { status: 413, headers: CORS_HEADERS });
-    }
-
-    // 2. Parse request body
-    const { canvas_image, product_image, prompt } = await req.json();
-
-    if (!canvas_image || !product_image) {
       return NextResponse.json(
-        { success: false, error: 'Missing canvas_image or product_image' }, 
-        { status: 400, headers: CORS_HEADERS }
+        { success: false, error: 'Payload too large' },
+        { status: 413, headers }
       );
     }
 
-    // 3. Process Images
-    const compositedBuffer = await compositeImages(normalizeImageUrl(product_image), canvas_image);
-    const finalBuffer = await enhanceWithGemini(compositedBuffer, prompt);
+    const body = await req.json();
+    const { product_image, canvas_image, prompt } = body;
 
-    // 4. Return Data URL to frontend
+    if (!product_image || !canvas_image) {
+      return NextResponse.json(
+        { success: false, error: 'Missing product_image or canvas_image in payload' },
+        { status: 400, headers }
+      );
+    }
+
+    const productBuffer = await loadImageBuffer(product_image, 'product_image');
+    const canvasBuffer = await loadImageBuffer(canvas_image, 'canvas_image');
+
+    // Optimized blending prompt for realistic 3D projecting and shadow mapping
+    const optimizedPrompt = prompt || `This is a product photo of a cap with crochet stickers on it. 
+Analyze the two input images:
+- The first image is the cap product photo (which can be tilted, rotated, or angled).
+- The second image is a transparent canvas guide containing crochet stickers.
+
+Your goal is to realistically project the crochet stickers from the second image onto the cap in the first image, placing them in the exact relative positions as shown on the canvas.
+
+CRITICAL REQUIREMENTS:
+- Align the stickers to the 3D surface, contours, folds, and perspective of the cap. If the cap is angled or tilted, warp and rotate the stickers to match the cap's surface perfectly.
+- Subtly enhance the local lighting, highlights, textures, and drop shadows of the stickers so they look physically attached (crocheted) onto the fabric of the cap.
+- Do NOT alter the background, shape, color, or design of the original cap.
+- Do NOT change the identity, design, or relative arrangement of the stickers.
+- Make the final output look like a single, photorealistic product photo of the customized cap.`;
+
+    const aiResult = await enhanceWithGemini(productBuffer, canvasBuffer, optimizedPrompt);
+
+    // Fallback to Sharp if API failed or key was not present
+    const finalBuffer = aiResult || (await compositeImages(productBuffer, canvasBuffer));
+    const finalDataUrl = bufferToDataUrl(finalBuffer, 'image/png');
+
     return NextResponse.json(
-      { success: true, image: bufferToDataUrl(finalBuffer) },
-      { status: 200, headers: CORS_HEADERS }
+      { success: true, image: finalDataUrl },
+      { status: 200, headers }
     );
-
   } catch (error) {
-    console.error('Merge Error:', error);
+    console.error('Error processing gemini-merge request:', error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Failed to process images' }, 
-      { status: 500, headers: CORS_HEADERS }
+      { success: false, error: 'Failed to process image merge', details: error.message },
+      { status: 500, headers }
     );
   }
 }
