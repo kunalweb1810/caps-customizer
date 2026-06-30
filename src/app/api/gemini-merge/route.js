@@ -179,14 +179,18 @@ export async function POST(req) {
 
     // Optimized blending prompt for realistic 3D projecting and shadow mapping
     const optimizedPrompt = prompt || `You are given two images:
-1. A real product photo of a blank white cap (the target).
+1. A real product photo of a blank cap (the target).
 2. A transparent canvas layout containing only the custom stickers placed by the user (the layout guide).
 
 Your goal: Isolate the stickers from the layout guide (Image 2) and project them onto the real product cap (Image 1) in the exact same positions.
 
 CRITICAL REQUIREMENTS:
 - Identify and isolate ONLY the stickers from Image 2. Completely ignore and discard any transparent space.
-- Count the stickers in Image 2. You must place EXACTLY the same stickers in the EXACT same quantity and relative positions on the real cap in Image 1. Do NOT duplicate, multiply, or add any extra stickers. For example, if there is only one sticker on the front-right of the layout, place exactly one sticker on the front-right of the real cap.
+- Count the stickers in Image 2. You must place EXACTLY the same stickers in the EXACT same quantity and relative positions on the real cap in Image 1. Do NOT duplicate, multiply, or add any extra stickers.
+- Place each sticker at the exact same relative position on the cap surface as shown in the layout guide. For example:
+  * If a sticker is placed on the visor (brim/bill) of the cap in Image 2, it must be placed on the visor (brim/bill) of the real cap in Image 1.
+  * If a sticker is placed on the lower-left crown area in Image 2, it must be placed on the lower-left crown area of the real cap in Image 1.
+  * Pay extremely close attention to the coordinates: translate the flat layout position from Image 2 onto the corresponding 3D surfaces of the cap in Image 1.
 - Adapt the stickers to the 3D surface, contours, orientation, and perspective of the real cap. Since the real cap is angled/rotated, warp, rotate, and skew the stickers so they look perfectly flat on the fabric of the real cap.
 - Subtly blend the stickers into the fabric texture, adjusting local lighting, highlights, and adding realistic drop shadows to match the lighting direction in the real product photo.
 - Keep the real cap's background, shape, texture, color, and design completely unchanged.
