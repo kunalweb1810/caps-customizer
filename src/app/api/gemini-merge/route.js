@@ -37,14 +37,18 @@ function normalizeImageUrl(url) {
 }
 
 /**
- * Safely decodes base64 string to Buffer.
+ * Safely decodes base64 string to Buffer, removing prefix and newlines/spaces.
  */
 function base64ToBuffer(base64String) {
-  const matches = base64String.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-  if (matches && matches.length === 3) {
-    return Buffer.from(matches[2], 'base64');
+  if (base64String.startsWith('data:')) {
+    const commaIndex = base64String.indexOf(',');
+    if (commaIndex !== -1) {
+      const cleanData = base64String.slice(commaIndex + 1).replace(/[\s\r\n]+/g, '');
+      return Buffer.from(cleanData, 'base64');
+    }
   }
-  return Buffer.from(base64String, 'base64');
+  const cleanData = base64String.replace(/[\s\r\n]+/g, '');
+  return Buffer.from(cleanData, 'base64');
 }
 
 /**
@@ -59,23 +63,19 @@ function bufferToDataUrl(buffer, mimeType = 'image/png') {
  */
 async function loadImageBuffer(imageInput, label = 'image') {
   if (!imageInput) return null;
-  if (typeof imageInput === 'string' && (imageInput.startsWith('data:') || !imageInput.startsWith('http'))) {
-    try {
-      return base64ToBuffer(imageInput);
-    } catch (e) {
-      if (imageInput.startsWith('http')) {
-        // Fall through to fetch if it looks like a URL
-      } else {
-        throw new Error(`Invalid base64 format for ${label}`);
+  if (typeof imageInput === 'string') {
+    const trimmed = imageInput.trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('//')) {
+      const response = await fetch(normalizeImageUrl(trimmed));
+      if (!response.ok) {
+        throw new Error(`Unable to download ${label} from URL: ${trimmed}`);
       }
+      return Buffer.from(await response.arrayBuffer());
+    } else {
+      return base64ToBuffer(trimmed);
     }
   }
-
-  const response = await fetch(normalizeImageUrl(imageInput));
-  if (!response.ok) {
-    throw new Error(`Unable to download ${label} from URL: ${imageInput}`);
-  }
-  return Buffer.from(await response.arrayBuffer());
+  throw new Error(`Invalid image input type for ${label}`);
 }
 
 /**
