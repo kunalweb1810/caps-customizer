@@ -42,30 +42,45 @@ function bufferToDataUrl(buffer, mimeType = 'image/png') {
   return `data:${mimeType};base64,${buffer.toString('base64')}`;
 }
 
+async function loadImageBuffer(imageInput, label = 'image') {
+  if (!imageInput) {
+    return null;
+  }
+
+  if (typeof imageInput === 'string' && imageInput.startsWith('data:')) {
+    return base64ToBuffer(imageInput);
+  }
+
+  const response = await fetch(normalizeImageUrl(imageInput));
+
+  if (!response.ok) {
+    throw new Error(`Unable to download ${label}`);
+  }
+
+  return Buffer.from(await response.arrayBuffer());
+}
+
 /**
  * Composites the guide image onto the product image using Sharp.
  * The guide image is treated as the placement reference and the product image is the base.
  */
 async function compositeImages(productImageUrl, guideImageUrl) {
-  const productResponse = await fetch(productImageUrl);
+  const productBuffer = await loadImageBuffer(productImageUrl, 'product image');
 
-  if (!productResponse.ok) {
-    throw new Error('Unable to download product image');
+  if (!productBuffer) {
+    throw new Error('Missing product image');
   }
-
-  const productBuffer = Buffer.from(await productResponse.arrayBuffer());
 
   if (!guideImageUrl) {
     return productBuffer;
   }
 
-  const guideResponse = await fetch(guideImageUrl);
+  const guideBuffer = await loadImageBuffer(guideImageUrl, 'guide image');
 
-  if (!guideResponse.ok) {
-    throw new Error('Unable to download guide image');
+  if (!guideBuffer) {
+    return productBuffer;
   }
 
-  const guideBuffer = Buffer.from(await guideResponse.arrayBuffer());
   const productMetadata = await sharp(productBuffer).metadata();
 
   const resizedGuideBuffer = await sharp(guideBuffer)
@@ -211,6 +226,7 @@ export async function POST(req) {
       guide_image ??
       guideImage ??
       sticker_image ??
+      (typeof stickers === 'string' ? stickers : null) ??
       (Array.isArray(images) ? images[0] : null) ??
       (Array.isArray(stickers) && stickers[0]?.image ? stickers[0].image : null);
 
