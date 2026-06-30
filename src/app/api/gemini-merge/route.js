@@ -42,63 +42,41 @@ function bufferToDataUrl(buffer, mimeType = 'image/png') {
   return `data:${mimeType};base64,${buffer.toString('base64')}`;
 }
 
-async function loadImageBuffer(imageInput, label = 'image') {
-  if (!imageInput) {
-    return null;
-  }
-
-  if (typeof imageInput === 'string' && imageInput.startsWith('data:')) {
-    return base64ToBuffer(imageInput);
-  }
-
-  const response = await fetch(normalizeImageUrl(imageInput));
-
-  if (!response.ok) {
-    throw new Error(`Unable to download ${label}`);
-  }
-
-  return Buffer.from(await response.arrayBuffer());
-}
-
 /**
- * Composites the guide image onto the product image using Sharp.
- * The guide image is treated as the placement reference and the product image is the base.
+ * Composites the design onto the cap using Sharp for deterministic, precise placement.
+ * 
+ * WHY DETERMINISTIC COMPOSITING IS USED BEFORE AI ENHANCEMENT:
+ * Generative AI models can sometimes hallucinate structural changes or alter exact positioning.
+ * By using Sharp first, we ensure a pixel-perfect baseline where the sticker is exactly 
+ * where the user placed it on the 2D canvas. The AI is then only used for "finishing touches" 
+ * (lighting, shadows, realism) rather than structural composition.
  */
-async function compositeImages(productImageUrl, guideImageUrl) {
-  const productBuffer = await loadImageBuffer(productImageUrl, 'product image');
-
-  if (!productBuffer) {
-    throw new Error('Missing product image');
+async function compositeImages(capImageUrl, canvasBase64) {
+  // Download product image
+  const response = await fetch(capImageUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to download product image: ${response.statusText}`);
   }
+  const capBuffer = await response.arrayBuffer();
+  const stickerBuffer = base64ToBuffer(canvasBase64);
 
-  if (!guideImageUrl) {
-    return productBuffer;
-  }
+  const capSharp = sharp(Buffer.from(capBuffer));
+  const capMetadata = await capSharp.metadata();
 
-  const guideBuffer = await loadImageBuffer(guideImageUrl, 'guide image');
+  // Resize sticker to match cap dimensions to prevent composite size mismatch errors
+  const resizedStickerBuffer = await sharp(stickerBuffer)
+    .resize(capMetadata.width, capMetadata.height, {
+      fit: 'fill'
+    })
+    .toBuffer();
 
-  if (!guideBuffer) {
-    return productBuffer;
-  }
-
-  const productMeta = await sharp(productBuffer).metadata();
-
-const resizedGuideBuffer = await sharp(guideBuffer)
-  .resize(
-      productMeta.width,
-      productMeta.height
-  )
-  .png()
-  .toBuffer();
-
-return sharp(productBuffer)
-    .composite([
-        {
-            input: resizedGuideBuffer
-        }
-    ])
+  // Composite the sticker layer onto the cap image
+  const compositedBuffer = await capSharp
+    .composite([{ input: resizedStickerBuffer }])
     .png()
     .toBuffer();
+
+  return compositedBuffer;
 }
 
 /**
@@ -110,10 +88,10 @@ return sharp(productBuffer)
  * a valid image, the function safely catches the error and falls back to the original 
  * deterministic Sharp composite.
  */
-async function enhanceWithGemini(productBuffer, guideBuffer, promptText = '') {
+async function enhanceWithGemini(compositedBuffer, promptText) {
   if (!process.env.GEMINI_API_KEY) {
-    console.warn('GEMINI_API_KEY not set.');
-    return null;
+    console.warn('GEMINI_API_KEY not set. Falling back to Sharp composite.');
+    return compositedBuffer;
   }
 
   try {
@@ -121,67 +99,73 @@ async function enhanceWithGemini(productBuffer, guideBuffer, promptText = '') {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
-    const prompt =
-      promptText ||
-      `You are given two images.
+    const base64Image = compositedBuffer.toString('base64');
+    
+    const defaultPrompt = `
+      You are given two images:
 
-Image 1:
-The original cap product photo.
+Image 1: The original product photo of the cap.
+Image 2: A placement guide showing one or more crochet stickers positioned on the cap.
 
-Image 2:
-A transparent placement guide.
-
-Apply Image 2 onto Image 1 exactly.
+Task:
+Transfer every crochet sticker from Image 2 onto the exact matching location on Image 1.
 
 Requirements:
-- Keep the original cap photo.
-- Preserve lighting.
-- Preserve stitching.
-- Preserve shadows.
-- Preserve perspective.
-- Preserve texture.
-- Do not modify background.
-- Do not invent new graphics.
-- Use Image 2 only as placement reference.
+- Keep the original cap photo completely unchanged.
+- Do not alter the cap shape, fabric, stitching, texture, color, shadows, lighting, folds, branding, or perspective.
+- Preserve the exact camera angle, framing, crop, and resolution.
+- Do not generate a new cap. Use the original cap image as the base.
+- Copy each crochet sticker exactly as provided. Do not redesign, redraw, recolor, smooth, sharpen, upscale, or reinterpret it.
+- Preserve every crochet detail, including yarn texture, embroidery, edges, colors, thickness, and imperfections.
+- Maintain the exact size, rotation, and position shown in the placement guide.
+- Make the sticker appear naturally attached to the cap by matching only the local perspective, lighting, and surface curvature.
+- Do not add extra shadows, reflections, or effects unless required for realistic attachment.
+- Do not add, remove, or modify any stickers.
+- Do not change the background.
+- Return only the final composited product image.
 
-Return only the final edited image.`;
+Goal:
+Produce a photorealistic preview of the original cap with the selected crochet stickers applied exactly where specified.
+    `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-image-preview",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: prompt,
-            },
-            {
-              inlineData: {
-                mimeType: "image/webp",
-                data: productBuffer.toString("base64"),
-              },
-            },
-            {
-              inlineData: {
-                mimeType: "image/png",
-                data: guideBuffer.toString("base64"),
-              },
-            },
-          ],
-        },
-      ],
+    // Ensure we explicitly add the strict constraint to any custom prompt
+    const finalPrompt = promptText 
+      ? `${promptText}\n\nPreserve sticker positions exactly. Do not add or remove stickers.` 
+      : defaultPrompt.trim();
+
+    // Set up the API call
+    const responsePromise = ai.models.generateImages({
+      model: "imagen-4.0-generate-001",
+      prompt: finalPrompt,
+      image: {
+        imageBytes: base64Image,
+        mimeType: "image/png",
+      },
+      config: {
+        numberOfImages: 1,
+      },
     });
 
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData?.data) {
-        return Buffer.from(part.inlineData.data, "base64");
-      }
-    }
+    // Enforce a timeout (15 seconds, image generation can take slightly longer)
+    const response = await Promise.race([
+      responsePromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Imagen API timeout')), 15000))
+    ]);
 
-    return null;
-  } catch (err) {
-    console.error(err);
-    return null;
+    const generatedImage = response.generatedImages?.[0];
+    
+    // Extract base64 based on typical @google/genai response structures
+    const outputBase64 = generatedImage?.image?.imageBytes || generatedImage?.imageBytes;
+
+    if (outputBase64) {
+      return Buffer.from(outputBase64, 'base64');
+    } else {
+      console.warn('Imagen did not return a valid base64 image. Falling back to Sharp composite.');
+      return compositedBuffer;
+    }
+  } catch (error) {
+    console.warn('Imagen enhancement failed, falling back to Sharp composite:', error.message);
+    return compositedBuffer;
   }
 }
 
@@ -208,68 +192,24 @@ export async function POST(req) {
 
     // 2. Parse JSON body
     const body = await req.json();
-    const {
-      product_image,
-      sticker,
-      guide_image,
-      guideImage,
-      sticker_image,
-      images,
-      stickers,
-    } = body;
-
-    const guideImageInput =
-      sticker ??
-      guide_image ??
-      guideImage ??
-      sticker_image ??
-      (typeof stickers === 'string' ? stickers : null) ??
-      (Array.isArray(images) ? images[0] : null) ??
-      (Array.isArray(stickers) && stickers[0]?.image ? stickers[0].image : null);
-
-    const productImageInput =
-      product_image ??
-      (Array.isArray(images) ? images[1] : null);
+    const { canvas_image, product_image, prompt } = body;
 
     // 3. Validate payloads
-    if (!productImageInput || !guideImageInput) {
+    if (!canvas_image || !product_image) {
       return NextResponse.json(
-        {
-          success: false,
-          error: 'Invalid payload',
-        },
-        {
-          status: 400,
-          headers: CORS_HEADERS,
-        }
+        { success: false, error: 'Missing canvas_image or product_image' },
+        { status: 400, headers: CORS_HEADERS }
       );
     }
 
-    // 4. Normalize image URLs
-    const normalizedProductUrl = normalizeImageUrl(productImageInput);
-    const normalizedGuideUrl = normalizeImageUrl(guideImageInput);
+    // 4. Normalize product image URL
+    const normalizedProductUrl = normalizeImageUrl(product_image);
 
-  const productBuffer = await loadImageBuffer(
-  normalizedProductUrl,
-  "product image"
-);
+    // 5. Composite sticker layer onto cap image using Sharp
+    const compositedBuffer = await compositeImages(normalizedProductUrl, canvas_image);
 
-const guideBuffer = await loadImageBuffer(
-  normalizedGuideUrl,
-  "guide image"
-);
-
-const aiResult = await enhanceWithGemini(
-  productBuffer,
-  guideBuffer
-);
-
-const finalBuffer =
-  aiResult ||
-  (await compositeImages(
-    normalizedProductUrl,
-    normalizedGuideUrl
-  ));
+    // 6. Optionally enhance realism using Imagen 4.0 via @google/genai
+    const finalBuffer = await enhanceWithGemini(compositedBuffer, prompt);
 
     // 7. Format the response data URL
     const finalDataUrl = bufferToDataUrl(finalBuffer, 'image/png');
